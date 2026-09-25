@@ -121,10 +121,28 @@ def run_smoke_test() -> bool:
             else:
                 logger.error("  [FAIL] Configured path missing: %s", path_name)
                 failures.append(f"Configured path missing: {path_name}")
-
     except Exception as e:
         logger.error("  [FAIL] Failed to load configuration: %s", e)
         failures.append(f"Config load error: {e}")
+
+    # 5. Verify Phase 1 Data Ingestion & Validation pipeline on sample data
+    sample_dir = root / "tests" / "fixtures" / "sample_data"
+    if sample_dir.is_dir():
+        try:
+            from src.data.data_source import LocalDataSource
+            from src.data.validator import DataValidator
+
+            ds = LocalDataSource(base_dir=sample_dir)
+            validator = DataValidator(data_source=ds, chunksize=100, logger=logger)
+            val_result = validator.validate_all()
+            if val_result.status == "PASS":
+                logger.info("  [PASS] Phase 1 sample validation pipeline executed and PASSED.")
+            else:
+                logger.error("  [FAIL] Phase 1 sample validation returned FAIL status.")
+                failures.append("Phase 1 sample validation failed")
+        except Exception as e:
+            logger.error("  [FAIL] Phase 1 sample validation error: %s", e)
+            failures.append(f"Phase 1 sample validation error: {e}")
 
     if failures:
         logger.error("Smoke test FAILED with %d error(s):", len(failures))
@@ -132,7 +150,7 @@ def run_smoke_test() -> bool:
             logger.error("  - %s", err)
         return False
 
-    logger.info("Smoke test PASSED! Project infrastructure is ready for Phase 0.")
+    logger.info("Smoke test PASSED! Project infrastructure and Phase 1 pipeline are operational.")
     return True
 
 

@@ -40,6 +40,16 @@ class ProjectPaths:
 
 
 @dataclass
+class S3Config:
+    """S3 storage configuration."""
+    enabled: bool
+    bucket_name: Optional[str]
+    region: str
+    data_prefix: str
+    artifacts_prefix: str
+
+
+@dataclass
 class ProjectConfig:
     """Consolidated project configuration."""
     project_name: str
@@ -47,6 +57,13 @@ class ProjectConfig:
     environment_mode: str  # 'local' or 'sage'
     log_level: str
     paths: ProjectPaths
+    storage: S3Config = field(default_factory=lambda: S3Config(
+        enabled=False,
+        bucket_name=None,
+        region="ap-southeast-2",
+        data_prefix="raw/dataset",
+        artifacts_prefix="artifacts/validation",
+    ))
     raw_config: Dict[str, Any] = field(default_factory=dict)
 
     def validate_paths(self, create_missing: bool = False) -> Dict[str, bool]:
@@ -140,11 +157,22 @@ def load_config(config_path: Optional[str] = None) -> ProjectConfig:
         results_csv=results_csv,
     )
 
+    storage_section = raw.get("storage", {})
+    s3_section = storage_section.get("s3", {})
+    s3_config = S3Config(
+        enabled=os.getenv("S3_ENABLED", str(s3_section.get("enabled", False))).lower() in ("true", "1", "yes"),
+        bucket_name=os.getenv("S3_BUCKET_NAME", s3_section.get("bucket_name")),
+        region=os.getenv("AWS_REGION", s3_section.get("region", "ap-southeast-2")),
+        data_prefix=os.getenv("S3_DATA_PREFIX", s3_section.get("data_prefix", "raw/dataset")),
+        artifacts_prefix=os.getenv("S3_ARTIFACTS_PREFIX", s3_section.get("artifacts_prefix", "artifacts/validation")),
+    )
+
     return ProjectConfig(
         project_name=project_name,
         phase=phase,
         environment_mode=environment_mode,
         log_level=log_level,
         paths=resolved_paths,
+        storage=s3_config,
         raw_config=raw,
     )

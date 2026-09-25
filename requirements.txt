@@ -4,3 +4,7 @@
 pyyaml>=6.0.1
 python-dotenv>=1.0.1
 pytest>=8.0.0
+
+# Phase 1 Data Ingestion & Validation
+pandas>=2.2.0
+boto3>=1.34.0

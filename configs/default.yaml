@@ -19,5 +19,6 @@ storage:
   s3:
     enabled: false
     bucket_name: null
-    artifacts_prefix: "artifacts"
-    data_prefix: "data"
+    region: "ap-southeast-2"
+    data_prefix: "raw/dataset"
+    artifacts_prefix: "artifacts/validation"
