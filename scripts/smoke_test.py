@@ -144,13 +144,46 @@ def run_smoke_test() -> bool:
             logger.error("  [FAIL] Phase 1 sample validation error: %s", e)
             failures.append(f"Phase 1 sample validation error: {e}")
 
+    # 6. Verify Phase 2 Data Normalization pipeline on sample data
+    if sample_dir.is_dir():
+        import tempfile
+        try:
+            from src.data.data_source import LocalDataSource
+            from src.normalization.pipeline import NormalizationPipeline, FINAL_COLUMN_ORDER
+
+            with tempfile.TemporaryDirectory() as tmp_out:
+                in_ds = LocalDataSource(base_dir=sample_dir)
+                out_ds = LocalDataSource(base_dir=tmp_out)
+                norm_pipeline = NormalizationPipeline(
+                    input_source=in_ds,
+                    output_source=out_ds,
+                    chunksize=100,
+                    logger=logger,
+                )
+                norm_report = norm_pipeline.run()
+
+                if norm_report["status"] == "PASS":
+                    # Check that output file exists, columns match, and row count matches
+                    norm_s1 = out_ds.read_table("train/train_source1_normalized.tsv")
+                    raw_s1 = in_ds.read_table("train/train_source1.tsv")
+                    assert len(norm_s1) == len(raw_s1)
+                    assert list(norm_s1.columns) == FINAL_COLUMN_ORDER
+                    assert list(norm_s1["entity_id"]) == list(raw_s1["entity_id"])
+                    logger.info("  [PASS] Phase 2 sample normalization pipeline executed and PASSED.")
+                else:
+                    logger.error("  [FAIL] Phase 2 normalization returned FAIL status.")
+                    failures.append("Phase 2 normalization failed")
+        except Exception as e:
+            logger.error("  [FAIL] Phase 2 normalization error: %s", e)
+            failures.append(f"Phase 2 normalization error: {e}")
+
     if failures:
         logger.error("Smoke test FAILED with %d error(s):", len(failures))
         for err in failures:
             logger.error("  - %s", err)
         return False
 
-    logger.info("Smoke test PASSED! Project infrastructure and Phase 1 pipeline are operational.")
+    logger.info("Smoke test PASSED! Project infrastructure, Phase 1, and Phase 2 pipelines are operational.")
     return True
 
 

@@ -52,7 +52,8 @@ S3 (Persistent storage for checkpoints, features, and model artifacts)
 ├── experiments/
 │   └── results.csv           # Experiment tracking log with required schema
 ├── scripts/
-│   ├── smoke_test.py         # Verification script for environment & Phase 1 pipeline
+│   ├── normalize_data.py     # CLI runner for Phase 2 data normalization
+│   ├── smoke_test.py         # Verification script for environment & Phase 1/2 pipelines
 │   └── validate_data.py      # CLI runner for Phase 1 data ingestion & validation
 ├── src/
 │   ├── __init__.py           # Package initialization
@@ -61,6 +62,10 @@ S3 (Persistent storage for checkpoints, features, and model artifacts)
 │   │   ├── __init__.py
 │   │   ├── data_source.py    # LocalDataSource and S3DataSource abstractions
 │   │   └── validator.py      # TSV schema, quality, entity ID, and GT validator
+│   ├── normalization/
+│   │   ├── __init__.py
+│   │   ├── normalizer.py     # Deterministic text & open-set country normalization
+│   │   └── pipeline.py       # Streaming chunked normalization pipeline
 │   └── utils/
 │       ├── __init__.py
 │       └── logger.py         # Standardized logging setup
@@ -71,6 +76,7 @@ S3 (Persistent storage for checkpoints, features, and model artifacts)
     ├── test_cli.py           # Tests for CLI exit codes and execution
     ├── test_config.py        # Tests for configuration and logging
     ├── test_data_source.py   # Tests for Local and S3 data sources
+    ├── test_normalization.py # Tests for Phase 2 text normalization & pipeline
     ├── test_smoke.py         # Tests for smoke test runner and repo conventions
     └── test_validation.py    # Tests for schema, quality, ID, and GT validation
 ```
@@ -133,7 +139,26 @@ python scripts/validate_data.py \
     --aws-region ap-southeast-2
 ```
 
-### 5. Run the Test Suite
+### 5. Run Phase 2 Data Normalization
+
+Normalize local sample datasets:
+
+```bash
+python scripts/normalize_data.py \
+    --input ./tests/fixtures/sample_data \
+    --output ./artifacts/normalized/v001
+```
+
+Or normalize the official dataset in SageMaker against S3:
+
+```bash
+python scripts/normalize_data.py \
+    --input s3://sagemaker-ap-southeast-2-904290466033/raw/dataset/ \
+    --output s3://sagemaker-ap-southeast-2-904290466033/artifacts/normalized/v001/ \
+    --aws-region ap-southeast-2
+```
+
+### 6. Run the Test Suite
 
 Run unit and integration tests using `pytest`:
 

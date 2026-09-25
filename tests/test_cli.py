@@ -46,3 +46,45 @@ def test_cli_invalid_dataset_fails(tmp_path: Path):
     res = subprocess.run(cmd, capture_output=True, text=True)
     assert res.returncode != 0
     assert "Validation failed" in res.stdout or "Validation failed" in res.stderr
+
+
+NORMALIZE_SCRIPT = REPO_ROOT / "scripts" / "normalize_data.py"
+
+
+def test_normalize_cli_valid_sample(tmp_path: Path):
+    """Verify normalize CLI runs cleanly and produces output TSVs and report."""
+    out_dir = tmp_path / "norm_output"
+    cmd = [
+        sys.executable,
+        str(NORMALIZE_SCRIPT),
+        "--input",
+        str(SAMPLE_DATA_DIR),
+        "--output",
+        str(out_dir),
+    ]
+
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0
+    assert "Normalization PASSED successfully!" in res.stdout
+    assert (out_dir / "normalization_report.json").is_file()
+    assert (out_dir / "train" / "train_source1_normalized.tsv").is_file()
+    assert (out_dir / "test" / "test_source3_normalized.tsv").is_file()
+
+
+def test_normalize_cli_invalid_dataset_fails(tmp_path: Path):
+    """Verify normalize CLI exits with non-zero when required source files are missing."""
+    empty_dir = tmp_path / "empty_dir"
+    empty_dir.mkdir()
+
+    cmd = [
+        sys.executable,
+        str(NORMALIZE_SCRIPT),
+        "--input",
+        str(empty_dir),
+        "--output",
+        str(tmp_path / "out"),
+    ]
+
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode != 0
+    assert "Normalization failed with errors" in res.stdout or "Normalization failed with errors" in res.stderr

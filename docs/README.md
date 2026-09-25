@@ -120,6 +120,82 @@ The validation process produces two JSON artifacts:
 
 ---
 
+## Phase 2: Data Normalization Guide
+
+> **Core Principle**: *Raw data is immutable; normalization creates derived artifacts.*
+
+### 1. Purpose of Normalization
+
+In business entity resolution, heterogeneous data sources introduce superficial variations in legal suffix formatting, punctuation, casing, spacing, and country representations (e.g. `ABC Pvt. Ltd.` vs. `ABC PRIVATE LIMITED`). Phase 2 produces deterministic, canonical representations to enable high-recall candidate generation, blocking, and feature engineering in subsequent phases—**while always preserving the raw original fields and entity IDs untouched**.
+
+### 2. Derived Fields Produced
+
+For each of the 6 source TSVs (`train_source1-3`, `test_source1-3`), the pipeline adds 6 normalized columns alongside the 4 original columns:
+
+| Column Name | Category | Description | Example |
+| :--- | :--- | :--- | :--- |
+| `entity_id` | Original | Preserved verbatim (unique identifier) | `s1_101` |
+| `business_name` | Original | Raw business name | `Acme Electronics Corp` |
+| `business_name_normalized` | Derived | NFKC Unicode, lowercase, punctuation normalized, ampersands expanded | `acme electronics corp` |
+| `business_name_core` | Derived | Normalized name with recognized legal suffixes cleanly removed from end | `acme electronics` |
+| `business_name_alnum` | Derived | Alphanumeric tokens only (space separated) for fast indexing/blocking | `acme electronics corp` |
+| `business_address` | Original | Raw business address | `100 Market St, San Francisco, CA` |
+| `business_address_normalized` | Derived | NFKC Unicode, lowercase, separator punctuation normalized, hyphens preserved | `100 market st san francisco ca` |
+| `business_address_alnum` | Derived | Alphanumeric tokens only (space separated) | `100 market st san francisco ca` |
+| `country` | Original | Raw country string | `US` |
+| `country_normalized` | Derived | Canonical 2-letter ISO code or cleaned lowercase string | `us` |
+
+*Note: Ground truth (`train_ground_truth.tsv`) is immutable and is NOT modified or normalized.*
+
+### 3. Normalization Policies
+
+#### A. Legal Suffix Policy (`business_name_core`)
+- Multi-word and single-word legal suffixes (e.g., `private limited`, `pvt ltd`, `inc`, `corp`, `llc`, `gmbh`, `ab`, `sa`) are removed **only** when they occur as distinct word tokens at the **end** of the normalized business name.
+- Suffixes appearing at the beginning or middle of names (e.g. `Limited Express Logistics`, `The Company Store`) are strictly preserved.
+- If stripping all suffixes would result in an empty string, the original normalized name is preserved.
+
+#### B. Country Normalization (Open-Set)
+- Country is treated as an open-set field. Unseen or rare countries are **never** rejected, filtered, or dropped.
+- Canonical alias mappings standardize common representations (e.g., `India`, `ind`, `INDIA` -> `in`; `U.S.A.`, `United States` -> `us`; `Deutschland` -> `de`).
+- All other country strings pass through cleanly formatted in lowercase.
+
+#### C. Memory Strategy & Streaming
+- Processing is performed in streaming chunks (`chunksize=50000`).
+- Chunks are normalized and streamed into temporary local storage before atomic transfer to destination (local directory or multi-part S3 upload).
+- Full multi-gigabyte datasets are never buffered in RAM simultaneously.
+
+### 4. Running Data Normalization
+
+#### Local Mode (Sample Data)
+
+```bash
+python scripts/normalize_data.py \
+    --input ./tests/fixtures/sample_data \
+    --output ./artifacts/normalized/v001
+```
+
+#### S3 Mode (SageMaker Execution)
+
+```bash
+python scripts/normalize_data.py \
+    --input s3://sagemaker-ap-southeast-2-904290466033/raw/dataset/ \
+    --output s3://sagemaker-ap-southeast-2-904290466033/artifacts/normalized/v001/ \
+    --aws-region ap-southeast-2 \
+    --chunksize 50000
+```
+
+### 5. Reproducibility & Normalization Report
+
+The normalization pipeline persists `normalization_report.json` containing:
+- Exact artifact version (`v001`), timestamp, and CLI parameters
+- Input and output URI locations
+- File-level before/after row count assertions (must match exactly)
+- Empty/null counts before vs. after normalization
+- Complete list of recognized legal suffixes and country aliases
+- Execution duration and integrity check statuses
+
+---
+
 ## Experiment Tracking
 
 All experimental runs, git hashes, pipeline versions, hyperparameters, and validation metrics are logged in [results.csv](file:///Users/arunraj/amazon-ml-challenge/amazon-ml-challenge-2026/experiments/results.csv).
