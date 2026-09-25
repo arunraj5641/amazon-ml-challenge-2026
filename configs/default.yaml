@@ -1,0 +1,23 @@
+project:
+  name: "amazon-ml-challenge-2026"
+  description: "Amazon ML Challenge 2026 Entity Resolution"
+  phase: 0
+  version: "0.1.0"
+
+environment:
+  mode: "local"  # 'local' or 'sage'
+  log_level: "INFO"
+
+paths:
+  data_dir: "data"
+  artifacts_dir: "artifacts"
+  configs_dir: "configs"
+  experiments_dir: "experiments"
+  results_csv: "experiments/results.csv"
+
+storage:
+  s3:
+    enabled: false
+    bucket_name: null
+    artifacts_prefix: "artifacts"
+    data_prefix: "data"

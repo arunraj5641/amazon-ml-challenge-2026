@@ -1,0 +1,6 @@
+# Phase 0 Infrastructure & Setup Dependencies
+# Only minimal dependencies required for setup, configuration, logging, and tests.
+
+pyyaml>=6.0.1
+python-dotenv>=1.0.1
+pytest>=8.0.0

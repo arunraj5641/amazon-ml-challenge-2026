@@ -1,0 +1,43 @@
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Python byte code and cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Environment files and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# macOS and OS metadata
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Local challenge datasets (preserve data/README.md)
+data/*
+!data/README.md
+!data/.gitkeep
+
+# Large generated artifacts & model weights (preserve artifacts/.gitkeep)
+artifacts/*
+!artifacts/.gitkeep
+
+# Build / Distribution
+build/
+dist/
+*.egg-info/
