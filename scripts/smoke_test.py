@@ -177,13 +177,61 @@ def run_smoke_test() -> bool:
             logger.error("  [FAIL] Phase 2 normalization error: %s", e)
             failures.append(f"Phase 2 normalization error: {e}")
 
+    # 7. Verify Phase 3 Training Pair Builder on sample data
+    if sample_dir.is_dir():
+        import tempfile
+        try:
+            from src.data.data_source import LocalDataSource
+            from src.pairs.builder import TrainingPairBuilder, TrainingPairConfig
+            from src.pairs.profiler import GroundTruthProfiler
+
+            with tempfile.TemporaryDirectory() as tmp_pairs:
+                in_ds = LocalDataSource(base_dir=sample_dir)
+                out_ds = LocalDataSource(base_dir=tmp_pairs)
+
+                # Profiler check
+                profiler = GroundTruthProfiler(data_source=in_ds, logger=logger)
+                profile = profiler.profile()
+                assert profile.total_source1_entities == 4
+                assert profile.total_positive_pairs == 3
+
+                # Builder & Validator check
+                builder = TrainingPairBuilder(
+                    input_source=in_ds,
+                    output_source=out_ds,
+                    config=TrainingPairConfig(negatives_per_positive=1, seed=42),
+                    logger=logger,
+                )
+                pairs_df, stats = builder.build_pairs_from_ground_truth(
+                    candidate_pool_s2=["s2_101", "s2_102", "s2_105"],
+                    candidate_pool_s3=["s3_101", "s3_106"],
+                )
+                assert stats["positive_pairs"] == 3
+                assert stats["negative_pairs"] == 3
+
+                val_res = builder.validator.validate(
+                    pairs_df,
+                    authoritative_positives={("s1_101", "s2_101"), ("s1_101", "s3_101"), ("s1_102", "s2_102")},
+                )
+                assert val_res.status == "PASS"
+
+                saved = builder.save_artifacts(pairs_df, stats, validation_result=val_res)
+                assert out_ds.exists("pair_stats.json")
+                assert out_ds.exists("pair_generation_report.json")
+                assert out_ds.exists("pair_validation_report.json")
+                assert out_ds.exists("metadata.json")
+                logger.info("  [PASS] Phase 3 sample pair builder pipeline executed and PASSED.")
+        except Exception as e:
+            logger.error("  [FAIL] Phase 3 pair builder error: %s", e)
+            failures.append(f"Phase 3 pair builder error: {e}")
+
     if failures:
         logger.error("Smoke test FAILED with %d error(s):", len(failures))
         for err in failures:
             logger.error("  - %s", err)
         return False
 
-    logger.info("Smoke test PASSED! Project infrastructure, Phase 1, and Phase 2 pipelines are operational.")
+    logger.info("Smoke test PASSED! Project infrastructure, Phase 1, Phase 2, and Phase 3 pipelines are operational.")
     return True
 
 
