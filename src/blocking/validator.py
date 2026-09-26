@@ -64,8 +64,8 @@ class BlockingValidator:
         cross_source_violations = 0
         test_leakage_count = 0
 
-        target_regex = re.compile(r"^(s2|s3|S2|S3)_.+", re.IGNORECASE)
-        s1_regex = re.compile(r"^(s1|S1)_.+", re.IGNORECASE)
+        target_regex = re.compile(r"^(s2|s3|S2|S3)[_-].+", re.IGNORECASE)
+        s1_regex = re.compile(r"^(s1|S1)[_-].+", re.IGNORECASE)
 
         seen_pairs: Set[Tuple[str, str]] = set()
         duplicate_pairs_count = 0
@@ -107,13 +107,13 @@ class BlockingValidator:
                 test_leakage_count += 1
 
         if invalid_s1_ids > 0:
-            errors.append(f"Rule 2 Violation: Found {invalid_s1_ids} invalid Source 1 entity IDs (must match s1_...).")
+            errors.append(f"Rule 2 Violation: Found {invalid_s1_ids} invalid Source 1 entity IDs (must match s1_... or s1-...).")
             checks["1_s1_id_format"] = "FAIL"
         else:
             checks["1_s1_id_format"] = "PASS"
 
         if invalid_target_ids > 0:
-            errors.append(f"Rule 1 Violation: Found {invalid_target_ids} invalid Target entity IDs (must match s2_... or s3_...).")
+            errors.append(f"Rule 1 Violation: Found {invalid_target_ids} invalid Target entity IDs (must match s2/s3 with _ or -).")
             checks["2_target_id_format"] = "FAIL"
         else:
             checks["2_target_id_format"] = "PASS"

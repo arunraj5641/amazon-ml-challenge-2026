@@ -338,6 +338,106 @@ def test_validator_rules_and_leakage():
     assert rep_leak.checks["7_no_test_leakage"] == "FAIL"
 
 
+def test_validator_id_format_regression_hyphen_and_underscore():
+    """Regression test: Verify validator accepts both hyphen (s1-XXXX) and underscore (s1_XXXX) formats."""
+    validator = BlockingValidator()
+
+    # 1. Hyphenated IDs (s1-XXXX, s2-XXXX, s3-XXXX)
+    hyphen_pairs = [
+        CandidatePair("s1-10001", "s2-20001", "Source 2"),
+        CandidatePair("s1-10001", "s3-30001", "Source 3"),
+        CandidatePair("s1-10002", "s2-20002", "Source 2"),
+        CandidatePair("s1-10002", "s3-30002", "Source 3"),
+    ]
+    rep_hyphen = validator.validate(
+        hyphen_pairs, input_normalization_version="v001", git_commit="abc", config_dict={"seed": 42}
+    )
+    assert rep_hyphen.status == "PASS"
+    assert rep_hyphen.checks["1_s1_id_format"] == "PASS"
+    assert rep_hyphen.checks["2_target_id_format"] == "PASS"
+    assert rep_hyphen.checks["5_deterministic_order"] == "PASS"
+    assert len(rep_hyphen.errors) == 0
+
+    # 2. Underscore IDs (s1_XXXX, s2_XXXX, s3_XXXX)
+    underscore_pairs = [
+        CandidatePair("s1_10001", "s2_20001", "Source 2"),
+        CandidatePair("s1_10001", "s3_30001", "Source 3"),
+        CandidatePair("s1_10002", "s2_20002", "Source 2"),
+        CandidatePair("s1_10002", "s3_30002", "Source 3"),
+    ]
+    rep_underscore = validator.validate(
+        underscore_pairs, input_normalization_version="v001", git_commit="abc", config_dict={"seed": 42}
+    )
+    assert rep_underscore.status == "PASS"
+    assert rep_underscore.checks["1_s1_id_format"] == "PASS"
+    assert rep_underscore.checks["2_target_id_format"] == "PASS"
+    assert rep_underscore.checks["5_deterministic_order"] == "PASS"
+    assert len(rep_underscore.errors) == 0
+
+    # 3. Invalid prefixes for S1 and targets
+    invalid_s1 = [
+        CandidatePair("e1_100", "s2-200", "Source 2"),
+        CandidatePair("invalid_s1", "s3_300", "Source 3"),
+        CandidatePair("s2-100", "s3-200", "Source 3"),
+    ]
+    rep_bad_s1 = validator.validate(invalid_s1)
+    assert rep_bad_s1.status == "FAIL"
+    assert rep_bad_s1.checks["1_s1_id_format"] == "FAIL"
+    assert "invalid Source 1 entity IDs" in rep_bad_s1.errors[0]
+
+    invalid_targets = [
+        CandidatePair("s1-100", "invalid_prefix", "Source 2"),
+        CandidatePair("s1-100", "s4-200", "Source 3"),
+        CandidatePair("s1-100", "target_999", "Source 2"),
+    ]
+    rep_bad_t = validator.validate(invalid_targets)
+    assert rep_bad_t.status == "FAIL"
+    assert rep_bad_t.checks["2_target_id_format"] == "FAIL"
+    assert "invalid Target entity IDs" in rep_bad_t.errors[0]
+
+
+def test_batch_generation_deterministic_global_ordering():
+    """Verify CandidateGenerator.generate_candidates_batch produces globally sorted candidate pairs."""
+    from src.blocking.strategies import ExactNameStrategy
+
+    cfg = BlockingConfig()
+    strat = ExactNameStrategy(cfg)
+    index = BlockingIndex(name="order_test_index")
+
+    # Add targets
+    index.add_target("s2-002", "Source 2", ["exact:alpha"])
+    index.add_target("s2-001", "Source 2", ["exact:alpha"])
+    index.add_target("s3-001", "Source 3", ["exact:beta"])
+    index.finalize(max_posting_list_size=100)
+
+    generator = CandidateGenerator(strat, index, cfg)
+
+    # Provide S1 records out of order
+    records = [
+        {"entity_id": "s1-z", "business_name": "alpha"},
+        {"entity_id": "s1-a", "business_name": "alpha"},
+        {"entity_id": "s1-m", "business_name": "beta"},
+    ]
+
+    batch_pairs = generator.generate_candidates_batch(records)
+
+    # Must be globally sorted by (source1_entity_id, target_entity_id)
+    pair_tuples = [(p.source1_entity_id, p.target_entity_id) for p in batch_pairs]
+    assert pair_tuples == sorted(pair_tuples)
+    assert pair_tuples[0] == ("s1-a", "s2-001")
+    assert pair_tuples[1] == ("s1-a", "s2-002")
+    assert pair_tuples[2] == ("s1-m", "s3-001")
+    assert pair_tuples[3] == ("s1-z", "s2-001")
+    assert pair_tuples[4] == ("s1-z", "s2-002")
+
+    # Validate passes Rule 5 with 0 ordering warnings
+    validator = BlockingValidator()
+    val_report = validator.validate(batch_pairs)
+    assert val_report.status == "PASS"
+    assert val_report.checks["5_deterministic_order"] == "PASS"
+    assert not any("Rule 5" in w for w in val_report.warnings)
+
+
 # ==============================================================================
 # 6. Small Synthetic Dataset Tests (Full ER Modalities)
 # ==============================================================================

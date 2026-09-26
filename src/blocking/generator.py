@@ -114,6 +114,7 @@ class CandidateGenerator:
         batch_pairs: List[CandidatePair] = []
         for rec in records:
             batch_pairs.extend(self.generate_candidates_for_record(rec))
+        batch_pairs.sort(key=lambda p: (p.source1_entity_id, p.target_entity_id))
         return batch_pairs
 
     @classmethod
