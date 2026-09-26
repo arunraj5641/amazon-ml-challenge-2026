@@ -23,6 +23,7 @@ from pathlib import Path
 import sys
 import tempfile
 import time
+from typing import Any, Dict, List, Optional
 
 # Add project root to sys.path
 project_root = Path(__file__).resolve().parent.parent
