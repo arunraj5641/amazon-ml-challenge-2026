@@ -1,0 +1,450 @@
+"""Explicit versioned Feature Schema definitions for Phase 6 and Phase 7."""
+
+from dataclasses import asdict, dataclass, field
+import json
+from typing import Any, Dict, List
+
+from src.features.config import FEATURE_NAMES, FEATURE_VERSION
+
+
+@dataclass
+class FeatureDefinition:
+    """Detailed metadata specification for a single feature."""
+
+    name: str
+    dtype: str  # "float32", "int32", etc.
+    description: str
+    source_fields: List[str]
+    missing_value_behavior: str
+    deterministic_definition: str
+    feature_version: str = FEATURE_VERSION
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+def build_default_feature_schema() -> Dict[str, Any]:
+    """Builds the comprehensive, authoritative feature schema dictionary for Phase 6."""
+    definitions: Dict[str, FeatureDefinition] = {
+        # 1. Name features
+        "name_exact_match": FeatureDefinition(
+            name="name_exact_match",
+            dtype="float32",
+            description="Binary indicator whether business_name_normalized matches exactly between S1 and Target.",
+            source_fields=["s1.business_name_normalized", "target.business_name_normalized"],
+            missing_value_behavior="0.0 if either name is missing or empty.",
+            deterministic_definition="1.0 if s1_name_norm and s1_name_norm == target_name_norm else 0.0",
+        ),
+        "name_core_exact_match": FeatureDefinition(
+            name="name_core_exact_match",
+            dtype="float32",
+            description="Binary indicator whether business_name_core (stripped of legal suffixes) matches exactly.",
+            source_fields=["s1.business_name_core", "target.business_name_core"],
+            missing_value_behavior="0.0 if either core name is missing or empty.",
+            deterministic_definition="1.0 if s1_core and s1_core == target_core else 0.0",
+        ),
+        "name_alnum_exact_match": FeatureDefinition(
+            name="name_alnum_exact_match",
+            dtype="float32",
+            description="Binary indicator whether alphanumeric business name matches exactly.",
+            source_fields=["s1.business_name_alnum", "target.business_name_alnum"],
+            missing_value_behavior="0.0 if either alphanumeric name is missing or empty.",
+            deterministic_definition="1.0 if s1_alnum and s1_alnum == target_alnum else 0.0",
+        ),
+        "name_char_length_diff": FeatureDefinition(
+            name="name_char_length_diff",
+            dtype="float32",
+            description="Absolute character length difference between normalized business names.",
+            source_fields=["s1.business_name_normalized", "target.business_name_normalized"],
+            missing_value_behavior="Difference from 0 if one name is missing.",
+            deterministic_definition="abs(len(s1_name_norm) - len(target_name_norm))",
+        ),
+        "name_char_length_ratio": FeatureDefinition(
+            name="name_char_length_ratio",
+            dtype="float32",
+            description="Ratio of shorter name length to longer name length (0.0 to 1.0).",
+            source_fields=["s1.business_name_normalized", "target.business_name_normalized"],
+            missing_value_behavior="0.0 if max length is 0.",
+            deterministic_definition="min(len1, len2) / max(len1, len2) if max > 0 else 0.0",
+        ),
+        "name_token_jaccard": FeatureDefinition(
+            name="name_token_jaccard",
+            dtype="float32",
+            description="Jaccard similarity between whitespace-tokenized business names.",
+            source_fields=["s1.business_name_normalized", "target.business_name_normalized"],
+            missing_value_behavior="0.0 if union is empty.",
+            deterministic_definition="|T1 & T2| / |T1 | T2| if |T1 | T2| > 0 else 0.0",
+        ),
+        "name_token_overlap_count": FeatureDefinition(
+            name="name_token_overlap_count",
+            dtype="float32",
+            description="Count of exact shared tokens between business names.",
+            source_fields=["s1.business_name_normalized", "target.business_name_normalized"],
+            missing_value_behavior="0.0 if no shared tokens.",
+            deterministic_definition="float(len(T1 & T2))",
+        ),
+        "name_token_dice": FeatureDefinition(
+            name="name_token_dice",
+            dtype="float32",
+            description="Sørensen-Dice coefficient between name token sets.",
+            source_fields=["s1.business_name_normalized", "target.business_name_normalized"],
+            missing_value_behavior="0.0 if both token sets are empty.",
+            deterministic_definition="2.0 * |T1 & T2| / (|T1| + |T2|) if (|T1| + |T2|) > 0 else 0.0",
+        ),
+        "name_token_containment": FeatureDefinition(
+            name="name_token_containment",
+            dtype="float32",
+            description="Fraction of shorter name's tokens contained in the longer name.",
+            source_fields=["s1.business_name_normalized", "target.business_name_normalized"],
+            missing_value_behavior="0.0 if min token count is 0.",
+            deterministic_definition="|T1 & T2| / min(|T1|, |T2|) if min(|T1|, |T2|) > 0 else 0.0",
+        ),
+        "name_prefix_match_3": FeatureDefinition(
+            name="name_prefix_match_3",
+            dtype="float32",
+            description="Binary indicator whether first 3 characters of normalized names match.",
+            source_fields=["s1.business_name_normalized", "target.business_name_normalized"],
+            missing_value_behavior="0.0 if either name has fewer than 3 characters.",
+            deterministic_definition="1.0 if len1 >= 3 and len2 >= 3 and n1[:3] == n2[:3] else 0.0",
+        ),
+        "name_prefix_match_5": FeatureDefinition(
+            name="name_prefix_match_5",
+            dtype="float32",
+            description="Binary indicator whether first 5 characters of normalized names match.",
+            source_fields=["s1.business_name_normalized", "target.business_name_normalized"],
+            missing_value_behavior="0.0 if either name has fewer than 5 characters.",
+            deterministic_definition="1.0 if len1 >= 5 and len2 >= 5 and n1[:5] == n2[:5] else 0.0",
+        ),
+        "name_char_qgram_jaccard": FeatureDefinition(
+            name="name_char_qgram_jaccard",
+            dtype="float32",
+            description="Character 3-gram Jaccard similarity for typo and transposition tolerance.",
+            source_fields=["s1.business_name_normalized", "target.business_name_normalized"],
+            missing_value_behavior="0.0 if union of 3-grams is empty.",
+            deterministic_definition="|Q1 & Q2| / |Q1 | Q2| if |Q1 | Q2| > 0 else 0.0",
+        ),
+        # 2. Address features
+        "address_exact_match": FeatureDefinition(
+            name="address_exact_match",
+            dtype="float32",
+            description="Binary indicator whether business_address_normalized matches exactly.",
+            source_fields=["s1.business_address_normalized", "target.business_address_normalized"],
+            missing_value_behavior="0.0 if either address is missing or empty.",
+            deterministic_definition="1.0 if s1_addr and s1_addr == target_addr else 0.0",
+        ),
+        "address_alnum_exact_match": FeatureDefinition(
+            name="address_alnum_exact_match",
+            dtype="float32",
+            description="Binary indicator whether alphanumeric address matches exactly.",
+            source_fields=["s1.business_address_alnum", "target.business_address_alnum"],
+            missing_value_behavior="0.0 if either alphanumeric address is missing.",
+            deterministic_definition="1.0 if s1_addr_alnum and s1_addr_alnum == target_addr_alnum else 0.0",
+        ),
+        "address_char_length_diff": FeatureDefinition(
+            name="address_char_length_diff",
+            dtype="float32",
+            description="Absolute character length difference between normalized addresses.",
+            source_fields=["s1.business_address_normalized", "target.business_address_normalized"],
+            missing_value_behavior="Difference from 0 if one address is missing.",
+            deterministic_definition="abs(len(s1_addr_norm) - len(target_addr_norm))",
+        ),
+        "address_char_length_ratio": FeatureDefinition(
+            name="address_char_length_ratio",
+            dtype="float32",
+            description="Ratio of shorter address length to longer address length.",
+            source_fields=["s1.business_address_normalized", "target.business_address_normalized"],
+            missing_value_behavior="0.0 if max length is 0.",
+            deterministic_definition="min(len1, len2) / max(len1, len2) if max > 0 else 0.0",
+        ),
+        "address_token_jaccard": FeatureDefinition(
+            name="address_token_jaccard",
+            dtype="float32",
+            description="Jaccard similarity between whitespace-tokenized addresses.",
+            source_fields=["s1.business_address_normalized", "target.business_address_normalized"],
+            missing_value_behavior="0.0 if union is empty.",
+            deterministic_definition="|A1 & A2| / |A1 | A2| if |A1 | A2| > 0 else 0.0",
+        ),
+        "address_token_overlap_count": FeatureDefinition(
+            name="address_token_overlap_count",
+            dtype="float32",
+            description="Count of exact shared tokens between addresses.",
+            source_fields=["s1.business_address_normalized", "target.business_address_normalized"],
+            missing_value_behavior="0.0 if no shared tokens.",
+            deterministic_definition="float(len(A1 & A2))",
+        ),
+        "address_token_dice": FeatureDefinition(
+            name="address_token_dice",
+            dtype="float32",
+            description="Sørensen-Dice coefficient between address token sets.",
+            source_fields=["s1.business_address_normalized", "target.business_address_normalized"],
+            missing_value_behavior="0.0 if both token sets are empty.",
+            deterministic_definition="2.0 * |A1 & A2| / (|A1| + |A2|) if (|A1| + |A2|) > 0 else 0.0",
+        ),
+        "address_token_containment": FeatureDefinition(
+            name="address_token_containment",
+            dtype="float32",
+            description="Fraction of shorter address's tokens contained in the longer address.",
+            source_fields=["s1.business_address_normalized", "target.business_address_normalized"],
+            missing_value_behavior="0.0 if min token count is 0.",
+            deterministic_definition="|A1 & A2| / min(|A1|, |A2|) if min(|A1|, |A2|) > 0 else 0.0",
+        ),
+        "address_number_overlap_count": FeatureDefinition(
+            name="address_number_overlap_count",
+            dtype="float32",
+            description="Count of shared numeric digits/tokens (street/suite numbers) in addresses.",
+            source_fields=["s1.business_address_normalized", "target.business_address_normalized"],
+            missing_value_behavior="0.0 if no numeric tokens in common.",
+            deterministic_definition="float(len(Num1 & Num2))",
+        ),
+        "address_number_jaccard": FeatureDefinition(
+            name="address_number_jaccard",
+            dtype="float32",
+            description="Jaccard similarity of numeric tokens extracted from addresses.",
+            source_fields=["s1.business_address_normalized", "target.business_address_normalized"],
+            missing_value_behavior="0.0 if no numeric tokens in union.",
+            deterministic_definition="|Num1 & Num2| / |Num1 | Num2| if |Num1 | Num2| > 0 else 0.0",
+        ),
+        # 3. Country features
+        "country_exact_match": FeatureDefinition(
+            name="country_exact_match",
+            dtype="float32",
+            description="Binary indicator whether country_normalized matches exactly.",
+            source_fields=["s1.country_normalized", "target.country_normalized"],
+            missing_value_behavior="0.0 if either country is missing or empty.",
+            deterministic_definition="1.0 if s1_c and target_c and s1_c == target_c else 0.0",
+        ),
+        "country_mismatch": FeatureDefinition(
+            name="country_mismatch",
+            dtype="float32",
+            description="Binary indicator whether both countries exist but disagree.",
+            source_fields=["s1.country_normalized", "target.country_normalized"],
+            missing_value_behavior="0.0 if either country is missing or empty.",
+            deterministic_definition="1.0 if s1_c and target_c and s1_c != target_c else 0.0",
+        ),
+        "country_missing_either": FeatureDefinition(
+            name="country_missing_either",
+            dtype="float32",
+            description="Binary indicator whether either S1 or Target is missing a country.",
+            source_fields=["s1.country_normalized", "target.country_normalized"],
+            missing_value_behavior="1.0 if not s1_c or not target_c else 0.0.",
+            deterministic_definition="1.0 if not s1_c or not target_c else 0.0",
+        ),
+        "country_missing_both": FeatureDefinition(
+            name="country_missing_both",
+            dtype="float32",
+            description="Binary indicator whether both S1 and Target are missing a country.",
+            source_fields=["s1.country_normalized", "target.country_normalized"],
+            missing_value_behavior="1.0 if not s1_c and not target_c else 0.0.",
+            deterministic_definition="1.0 if not s1_c and not target_c else 0.0",
+        ),
+        # 4. Source & Strategy features
+        "is_target_source2": FeatureDefinition(
+            name="is_target_source2",
+            dtype="float32",
+            description="Binary indicator whether target entity belongs to Source 2.",
+            source_fields=["target_source"],
+            missing_value_behavior="0.0 if target is Source 3.",
+            deterministic_definition="1.0 if target_source == 'Source 2' else 0.0",
+        ),
+        "is_target_source3": FeatureDefinition(
+            name="is_target_source3",
+            dtype="float32",
+            description="Binary indicator whether target entity belongs to Source 3.",
+            source_fields=["target_source"],
+            missing_value_behavior="0.0 if target is Source 2.",
+            deterministic_definition="1.0 if target_source == 'Source 3' else 0.0",
+        ),
+        "strategy_count": FeatureDefinition(
+            name="strategy_count",
+            dtype="float32",
+            description="Number of blocking strategies that generated this candidate pair.",
+            source_fields=["strategies"],
+            missing_value_behavior="1.0 default if unrecorded.",
+            deterministic_definition="float(len(strategies.split(',')))",
+        ),
+        "strategy_exact_name": FeatureDefinition(
+            name="strategy_exact_name",
+            dtype="float32",
+            description="Binary indicator whether exact_name strategy contributed to this pair.",
+            source_fields=["strategies"],
+            missing_value_behavior="0.0 if not in strategies list.",
+            deterministic_definition="1.0 if 'exact_name' in strategies else 0.0",
+        ),
+        "strategy_name_token": FeatureDefinition(
+            name="strategy_name_token",
+            dtype="float32",
+            description="Binary indicator whether name_token strategy contributed to this pair.",
+            source_fields=["strategies"],
+            missing_value_behavior="0.0 if not in strategies list.",
+            deterministic_definition="1.0 if 'name_token' in strategies else 0.0",
+        ),
+        "strategy_name_prefix": FeatureDefinition(
+            name="strategy_name_prefix",
+            dtype="float32",
+            description="Binary indicator whether name_prefix strategy contributed to this pair.",
+            source_fields=["strategies"],
+            missing_value_behavior="0.0 if not in strategies list.",
+            deterministic_definition="1.0 if 'name_prefix' in strategies else 0.0",
+        ),
+        "strategy_address_conservative": FeatureDefinition(
+            name="strategy_address_conservative",
+            dtype="float32",
+            description="Binary indicator whether address_conservative strategy contributed.",
+            source_fields=["strategies"],
+            missing_value_behavior="0.0 if not in strategies list.",
+            deterministic_definition="1.0 if 'address_conservative' in strategies else 0.0",
+        ),
+        "strategy_country_scoped_name": FeatureDefinition(
+            name="strategy_country_scoped_name",
+            dtype="float32",
+            description="Binary indicator whether country_scoped_name strategy contributed.",
+            source_fields=["strategies"],
+            missing_value_behavior="0.0 if not in strategies list.",
+            deterministic_definition="1.0 if 'country_scoped_name' in strategies else 0.0",
+        ),
+        "strategy_composite": FeatureDefinition(
+            name="strategy_composite",
+            dtype="float32",
+            description="Binary indicator whether composite strategy contributed to this pair.",
+            source_fields=["strategies"],
+            missing_value_behavior="0.0 if not in strategies list.",
+            deterministic_definition="1.0 if 'composite' in strategies else 0.0",
+        ),
+        # 5. Missingness & Quality features
+        "s1_name_missing": FeatureDefinition(
+            name="s1_name_missing",
+            dtype="float32",
+            description="Binary indicator whether S1 business name is missing.",
+            source_fields=["s1.business_name"],
+            missing_value_behavior="1.0 if missing, 0.0 if present.",
+            deterministic_definition="1.0 if not s1_name else 0.0",
+        ),
+        "target_name_missing": FeatureDefinition(
+            name="target_name_missing",
+            dtype="float32",
+            description="Binary indicator whether Target business name is missing.",
+            source_fields=["target.business_name"],
+            missing_value_behavior="1.0 if missing, 0.0 if present.",
+            deterministic_definition="1.0 if not target_name else 0.0",
+        ),
+        "s1_address_missing": FeatureDefinition(
+            name="s1_address_missing",
+            dtype="float32",
+            description="Binary indicator whether S1 business address is missing.",
+            source_fields=["s1.business_address"],
+            missing_value_behavior="1.0 if missing, 0.0 if present.",
+            deterministic_definition="1.0 if not s1_addr else 0.0",
+        ),
+        "target_address_missing": FeatureDefinition(
+            name="target_address_missing",
+            dtype="float32",
+            description="Binary indicator whether Target business address is missing.",
+            source_fields=["target.business_address"],
+            missing_value_behavior="1.0 if missing, 0.0 if present.",
+            deterministic_definition="1.0 if not target_addr else 0.0",
+        ),
+        "s1_country_missing": FeatureDefinition(
+            name="s1_country_missing",
+            dtype="float32",
+            description="Binary indicator whether S1 country is missing.",
+            source_fields=["s1.country"],
+            missing_value_behavior="1.0 if missing, 0.0 if present.",
+            deterministic_definition="1.0 if not s1_c else 0.0",
+        ),
+        "target_country_missing": FeatureDefinition(
+            name="target_country_missing",
+            dtype="float32",
+            description="Binary indicator whether Target country is missing.",
+            source_fields=["target.country"],
+            missing_value_behavior="1.0 if missing, 0.0 if present.",
+            deterministic_definition="1.0 if not target_c else 0.0",
+        ),
+        "both_address_missing": FeatureDefinition(
+            name="both_address_missing",
+            dtype="float32",
+            description="Binary indicator whether both S1 and Target addresses are missing.",
+            source_fields=["s1.business_address", "target.business_address"],
+            missing_value_behavior="1.0 if both missing, 0.0 otherwise.",
+            deterministic_definition="1.0 if not s1_addr and not target_addr else 0.0",
+        ),
+        "total_available_fields": FeatureDefinition(
+            name="total_available_fields",
+            dtype="float32",
+            description="Sum of non-empty fields across S1 and Target (out of 6 max).",
+            source_fields=["s1.*", "target.*"],
+            missing_value_behavior="Count of non-empty fields (0.0 to 6.0).",
+            deterministic_definition="float(sum(bool(f) for f in [n1, ad1, c1, n2, ad2, c2]))",
+        ),
+        # 6. Entity length & token count features
+        "s1_name_char_len": FeatureDefinition(
+            name="s1_name_char_len",
+            dtype="float32",
+            description="Character length of normalized S1 business name.",
+            source_fields=["s1.business_name_normalized"],
+            missing_value_behavior="0.0 if missing.",
+            deterministic_definition="float(len(s1_name_norm))",
+        ),
+        "target_name_char_len": FeatureDefinition(
+            name="target_name_char_len",
+            dtype="float32",
+            description="Character length of normalized Target business name.",
+            source_fields=["target.business_name_normalized"],
+            missing_value_behavior="0.0 if missing.",
+            deterministic_definition="float(len(target_name_norm))",
+        ),
+        "s1_name_token_count": FeatureDefinition(
+            name="s1_name_token_count",
+            dtype="float32",
+            description="Whitespace token count of S1 business name.",
+            source_fields=["s1.business_name_normalized"],
+            missing_value_behavior="0.0 if missing.",
+            deterministic_definition="float(len(s1_name_tokens))",
+        ),
+        "target_name_token_count": FeatureDefinition(
+            name="target_name_token_count",
+            dtype="float32",
+            description="Whitespace token count of Target business name.",
+            source_fields=["target.business_name_normalized"],
+            missing_value_behavior="0.0 if missing.",
+            deterministic_definition="float(len(target_name_tokens))",
+        ),
+        "s1_address_char_len": FeatureDefinition(
+            name="s1_address_char_len",
+            dtype="float32",
+            description="Character length of normalized S1 business address.",
+            source_fields=["s1.business_address_normalized"],
+            missing_value_behavior="0.0 if missing.",
+            deterministic_definition="float(len(s1_addr_norm))",
+        ),
+        "target_address_char_len": FeatureDefinition(
+            name="target_address_char_len",
+            dtype="float32",
+            description="Character length of normalized Target business address.",
+            source_fields=["target.business_address_normalized"],
+            missing_value_behavior="0.0 if missing.",
+            deterministic_definition="float(len(target_addr_norm))",
+        ),
+        "s1_address_token_count": FeatureDefinition(
+            name="s1_address_token_count",
+            dtype="float32",
+            description="Whitespace token count of S1 business address.",
+            source_fields=["s1.business_address_normalized"],
+            missing_value_behavior="0.0 if missing.",
+            deterministic_definition="float(len(s1_addr_tokens))",
+        ),
+        "target_address_token_count": FeatureDefinition(
+            name="target_address_token_count",
+            dtype="float32",
+            description="Whitespace token count of Target business address.",
+            source_fields=["target.business_address_normalized"],
+            missing_value_behavior="0.0 if missing.",
+            deterministic_definition="float(len(target_addr_tokens))",
+        ),
+    }
+
+    return {
+        "version": FEATURE_VERSION,
+        "feature_count": len(definitions),
+        "feature_order": FEATURE_NAMES,
+        "features": {k: definitions[k].to_dict() for k in FEATURE_NAMES},
+    }
