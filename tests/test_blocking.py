@@ -618,3 +618,78 @@ def test_blocking_evaluator_end_to_end(tmp_path: Path):
     assert out_ds.exists("blocking_strategy_results.json")
     assert out_ds.exists("blocking_metadata.json")
     assert out_ds.exists("blocking_validation_report.json")
+
+
+def test_duplicate_composite_keys_deduplicated_and_produces_candidate_once():
+    """Verify duplicate keys across composite sub-strategies produce candidate target only once and capture all strategies."""
+    cfg = BlockingConfig()
+
+    # Create two strategies that produce an overlapping key 'overlap_key'
+    class MockStrategyA(ExactNameStrategy):
+        @property
+        def name(self) -> str:
+            return "strat_a"
+
+        def generate_keys(self, record):
+            return ["overlap_key", "unique_a"]
+
+    class MockStrategyB(ExactNameStrategy):
+        @property
+        def name(self) -> str:
+            return "strat_b"
+
+        def generate_keys(self, record):
+            return ["overlap_key", "unique_b"]
+
+    strat_a = MockStrategyA(cfg)
+    strat_b = MockStrategyB(cfg)
+    composite = CompositeStrategy([strat_a, strat_b])
+
+    # Index target entity on 'overlap_key'
+    index = BlockingIndex(name="overlap_test_index")
+    index.add_target(target_id="s2-100", source="Source 2", keys=["overlap_key"])
+    index.finalize(max_posting_list_size=50)
+
+    generator = CandidateGenerator(strategy=composite, index=index, config=cfg)
+
+    # Query with record that generates overlapping keys
+    s1_rec = {"entity_id": "s1-100", "business_name": "Test Company"}
+    pairs = generator.generate_candidates_for_record(s1_rec)
+
+    # Candidate target s2-100 must appear EXACTLY ONCE
+    assert len(pairs) == 1
+    pair = pairs[0]
+    assert pair.source1_entity_id == "s1-100"
+    assert pair.target_entity_id == "s2-100"
+    # Both strat_a and strat_b must be recorded in strategies
+    assert "strat_a" in pair.strategies
+    assert "strat_b" in pair.strategies
+
+
+def test_generate_candidates_cli_deterministic_global_ordering(tmp_path: Path):
+    """Verify generate_candidates CLI outputs candidate pairs strictly ordered by (s1, target) and passes Rule 5."""
+    import subprocess
+    import sys
+
+    out_dir = tmp_path / "gen_cli_order_test"
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve().parent.parent / "scripts" / "generate_candidates.py"),
+        "--norm-input",
+        str(FIXTURES_DIR),
+        "--output",
+        str(out_dir),
+        "--strategy",
+        "composite",
+    ]
+
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0
+    assert (out_dir / "candidate_pairs.tsv").is_file()
+
+    # Read pairs from TSV and verify strict sorting
+    df = pd.read_csv(out_dir / "candidate_pairs.tsv", sep="\t")
+    pairs = list(zip(df["source1_entity_id"], df["target_entity_id"]))
+    assert pairs == sorted(pairs)
+    assert len(pairs) == len(set(pairs))  # 0 duplicates
+

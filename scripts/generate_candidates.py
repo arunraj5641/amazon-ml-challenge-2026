@@ -202,6 +202,9 @@ def main():
         elapsed,
     )
 
+    # Globally sort deterministically before validation and persistence
+    all_candidate_pairs.sort(key=lambda p: (p.source1_entity_id, p.target_entity_id))
+
     # 3. Validate
     logger.info("Step 3/4: Validating candidate pairs...")
     validator = BlockingValidator(logger_instance=logger)

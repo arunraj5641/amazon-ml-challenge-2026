@@ -69,8 +69,11 @@ class CandidateGenerator:
         if not all_keys:
             return []
 
+        # Deduplicate keys before query to avoid redundant posting list traversals
+        unique_keys = list(dict.fromkeys(all_keys))
+
         # Query index
-        candidate_ids, cand_matched_keys = self.index.query(all_keys)
+        candidate_ids, cand_matched_keys = self.index.query(unique_keys)
         if not candidate_ids:
             return []
 
