@@ -26,6 +26,7 @@ from src.blocking.strategies import (
     create_default_strategies,
     create_strategy,
 )
+from src.blocking.recall_evaluator import BlockingRecallEvaluator
 from src.blocking.types import CandidatePair, StrategyMetrics, ValidationReport
 from src.blocking.validator import BlockingValidator
 
@@ -49,6 +50,7 @@ __all__ = [
     "create_default_strategies",
     "CandidateGenerator",
     "BlockingEvaluator",
+    "BlockingRecallEvaluator",
     "compute_blocking_metrics",
     "BlockingValidator",
     "save_candidate_pairs",
