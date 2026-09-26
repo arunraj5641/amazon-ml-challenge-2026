@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import tempfile
+from typing import Any, Dict, List, Optional, Set, Tuple
 import pytest
 import pandas as pd
 
@@ -692,4 +693,204 @@ def test_generate_candidates_cli_deterministic_global_ordering(tmp_path: Path):
     pairs = list(zip(df["source1_entity_id"], df["target_entity_id"]))
     assert pairs == sorted(pairs)
     assert len(pairs) == len(set(pairs))  # 0 duplicates
+
+
+# ==============================================================================
+# 8. Streaming Candidate Generation & Memory-Safe Merge Tests
+# ==============================================================================
+
+
+def test_streaming_validator_adjacent_duplicate_and_order_checks():
+    """Verify BlockingValidator.validate_stream checks duplicates and ordering via streaming adjacent checks."""
+    validator = BlockingValidator()
+
+    # 1. Valid stream in deterministic order
+    def valid_stream():
+        yield CandidatePair("s1-001", "s2-001", "Source 2")
+        yield CandidatePair("s1-001", "s3-001", "Source 3")
+        yield CandidatePair("s1-002", "s2-002", "Source 2")
+
+    rep = validator.validate_stream(
+        valid_stream(),
+        input_normalization_version="v001",
+        git_commit="abc",
+        config_dict={"seed": 42},
+    )
+    assert rep.status == "PASS"
+    assert rep.checks["1_s1_id_format"] == "PASS"
+    assert rep.checks["2_target_id_format"] == "PASS"
+    assert rep.checks["4_no_duplicate_pairs"] == "PASS"
+    assert rep.checks["5_deterministic_order"] == "PASS"
+    assert rep.metrics_summary["total_candidate_pairs"] == 3
+    assert rep.metrics_summary["duplicates_detected"] == 0
+
+    # 2. Duplicate stream (adjacent duplicate)
+    def duplicate_stream():
+        yield CandidatePair("s1-001", "s2-001", "Source 2")
+        yield CandidatePair("s1-001", "s2-001", "Source 2")  # Duplicate!
+        yield CandidatePair("s1-002", "s2-002", "Source 2")
+
+    rep_dupe = validator.validate_stream(duplicate_stream())
+    assert rep_dupe.status == "FAIL"
+    assert rep_dupe.checks["4_no_duplicate_pairs"] == "FAIL"
+    assert rep_dupe.metrics_summary["duplicates_detected"] == 1
+
+    # 3. Out-of-order stream
+    def unsorted_stream():
+        yield CandidatePair("s1-002", "s2-002", "Source 2")
+        yield CandidatePair("s1-001", "s2-001", "Source 2")  # Unsorted!
+
+    rep_unsorted = validator.validate_stream(unsorted_stream())
+    assert rep_unsorted.checks["5_deterministic_order"] == "WARN"
+    assert any("Rule 5 Warning" in w for w in rep_unsorted.warnings)
+
+
+def test_streaming_candidate_generation_equivalence_small_synthetic(tmp_path: Path):
+    """Verify chunked streaming candidate generation produces exact same candidates as in-memory generation."""
+    from src.blocking.generator import stream_merged_candidate_chunks, write_candidates_chunk
+    from src.blocking.strategies import create_default_strategies
+
+    cfg = BlockingConfig(
+        strategies=["exact_name", "name_token", "name_prefix", "address_conservative", "country_scoped_name"],
+        prefix_length=4,
+        max_posting_list_size=10,
+        country_agreement_mode="allow_missing",
+    )
+    strats = create_default_strategies(cfg)
+    composite = strats["composite"]
+
+    # Target data
+    s2_data = [
+        {"entity_id": "s2-101", "business_name": "Apex Electronics", "business_address": "100 Market Street", "country": "US"},
+        {"entity_id": "s2-102", "business_name": "Logistics Global India", "business_address": "MG Road No 12", "country": "IN"},
+        {"entity_id": "s2-103", "business_name": "Boutique and Cafe Parisienne", "business_address": "45 Rue de Rivoli", "country": "FR"},
+    ]
+    s3_data = [
+        {"entity_id": "s3-102", "business_name": "Global Logistics India Enterprise", "business_address": "12 MG Rd, Bengaluru", "country": "India"},
+    ]
+
+    index = BlockingIndex(name="equiv_test_index")
+    for rec in s2_data:
+        index.add_target(rec["entity_id"], "Source 2", composite.generate_keys(rec), country=rec.get("country"))
+    for rec in s3_data:
+        index.add_target(rec["entity_id"], "Source 3", composite.generate_keys(rec), country=rec.get("country"))
+    index.finalize(max_posting_list_size=10)
+
+    # Query S1 records
+    s1_data = [
+        {"entity_id": "s1-101", "business_name": "Apex Electronics Corp", "business_address": "100 Market St, SF", "country": "US"},
+        {"entity_id": "s1-102", "business_name": "Global Logistics India Pvt Ltd", "business_address": "12 MG Road, Bangalore", "country": "India"},
+        {"entity_id": "s1-103", "business_name": "Boutique & Cafe Parisienne S.A.", "business_address": "45 Rue de Rivoli, Paris", "country": "France"},
+    ]
+
+    generator = CandidateGenerator(composite, index, cfg)
+
+    # 1. In-memory generation
+    expected_pairs = generator.generate_candidates_batch(s1_data)
+
+    # 2. Chunked streaming generation (spill 1 record per chunk to test chunk boundaries)
+    chunk_files = []
+    temp_dir = tmp_path / "stream_equiv_chunks"
+    temp_dir.mkdir()
+
+    for idx, rec in enumerate(s1_data):
+        cands = generator.generate_candidates_for_record(rec)
+        cf = temp_dir / f"chunk_{idx:03d}.tsv.gz"
+        write_candidates_chunk(cands, cf)
+        chunk_files.append(cf)
+
+    # Merge chunks to final TSV
+    out_tsv = temp_dir / "final_merged.tsv"
+    streamed_pairs = list(stream_merged_candidate_chunks(chunk_files, output_tsv_path=out_tsv))
+
+    # Assert exact equivalence
+    assert len(streamed_pairs) == len(expected_pairs)
+    for p_stream, p_exp in zip(streamed_pairs, expected_pairs):
+        assert p_stream.source1_entity_id == p_exp.source1_entity_id
+        assert p_stream.target_entity_id == p_exp.target_entity_id
+        assert p_stream.target_source == p_exp.target_source
+        assert p_stream.strategies == p_exp.strategies
+
+    # Verify generated TSV file has correct schema and contents
+    df_tsv = pd.read_csv(out_tsv, sep="\t")
+    assert list(df_tsv.columns) == ["source1_entity_id", "target_entity_id", "target_source", "strategies"]
+    assert len(df_tsv) == len(expected_pairs)
+
+
+def test_streaming_chunks_boundaries_empty_and_multiple(tmp_path: Path):
+    """Verify stream_merged_candidate_chunks correctly handles empty chunks and multiple chunks."""
+    from src.blocking.generator import stream_merged_candidate_chunks, write_candidates_chunk
+
+    temp_dir = tmp_path / "multi_chunk_test"
+    temp_dir.mkdir()
+
+    # Chunk 1: regular pairs
+    pairs_1 = [
+        CandidatePair("s1-002", "s2-001", "Source 2", ("exact_name",)),
+        CandidatePair("s1-001", "s2-001", "Source 2", ("exact_name",)),
+    ]
+    f1 = temp_dir / "chunk1.tsv.gz"
+    write_candidates_chunk(pairs_1, f1)
+
+    # Chunk 2: empty
+    pairs_2: List[CandidatePair] = []
+    f2 = temp_dir / "chunk2.tsv.gz"
+    write_candidates_chunk(pairs_2, f2)
+
+    # Chunk 3: regular pairs
+    pairs_3 = [
+        CandidatePair("s1-001", "s3-001", "Source 3", ("name_token",)),
+        CandidatePair("s1-003", "s2-005", "Source 2", ("exact_name",)),
+    ]
+    f3 = temp_dir / "chunk3.tsv.gz"
+    write_candidates_chunk(pairs_3, f3)
+
+    out_tsv = temp_dir / "merged_out.tsv"
+    merged = list(stream_merged_candidate_chunks([f1, f2, f3], output_tsv_path=out_tsv))
+
+    assert len(merged) == 4
+    # Globally sorted by (s1, target)
+    expected_order = [
+        ("s1-001", "s2-001"),
+        ("s1-001", "s3-001"),
+        ("s1-002", "s2-001"),
+        ("s1-003", "s2-005"),
+    ]
+    actual_order = [(p.source1_entity_id, p.target_entity_id) for p in merged]
+    assert actual_order == expected_order
+
+
+def test_streaming_cleanup_and_error_handling(tmp_path: Path):
+    """Verify generate_candidates CLI cleans up temp_dir and handles failure safely."""
+    import subprocess
+    import sys
+
+    custom_temp = tmp_path / "my_custom_temp"
+    custom_temp.mkdir()
+    out_dir = tmp_path / "cleanup_test_out"
+
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve().parent.parent / "scripts" / "generate_candidates.py"),
+        "--norm-input",
+        str(FIXTURES_DIR),
+        "--output",
+        str(out_dir),
+        "--strategy",
+        "composite",
+        "--chunksize",
+        "2",  # Small chunksize to produce multiple disk chunks
+        "--temp-dir",
+        str(custom_temp),
+    ]
+
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0
+    assert (out_dir / "candidate_pairs.tsv").is_file()
+    assert (out_dir / "blocking_stats.json").is_file()
+
+    # Verify temp subdirectories were cleaned up
+    remaining_temps = list(custom_temp.glob("cand_gen_*"))
+    assert len(remaining_temps) == 0, f"Temporary directories were not cleaned up: {remaining_temps}"
+
 

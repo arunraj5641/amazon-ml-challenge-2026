@@ -220,3 +220,194 @@ class BlockingValidator:
             warnings=warnings,
             metrics_summary=metrics_summary,
         )
+
+    def validate_stream(
+        self,
+        candidate_pairs: Any,
+        metrics: Optional[Dict[str, Any]] = None,
+        test_entity_ids: Optional[Set[str]] = None,
+        input_normalization_version: Optional[str] = None,
+        git_commit: Optional[str] = None,
+        config_dict: Optional[Dict[str, Any]] = None,
+    ) -> ValidationReport:
+        """Runs Phase 4 validation on a streaming iterator of CandidatePair instances.
+
+        Operates with O(1) memory by relying on adjacent comparisons across globally
+        sorted candidate pairs for duplicate detection and deterministic order verification.
+
+        Args:
+            candidate_pairs: Iterable or Generator yielding CandidatePair instances.
+            metrics: Optional metrics dictionary from compute_blocking_metrics.
+            test_entity_ids: Optional set of known test entity IDs.
+            input_normalization_version: Normalization version string.
+            git_commit: Git commit hash string.
+            config_dict: Configuration parameters dictionary.
+
+        Returns:
+            ValidationReport instance with status 'PASS' or 'FAIL'.
+        """
+        errors: List[str] = []
+        warnings: List[str] = []
+        checks: Dict[str, str] = {}
+
+        self.logger.info("Starting streaming Phase 4 Blocking Validation...")
+
+        invalid_s1_ids = 0
+        invalid_target_ids = 0
+        cross_source_violations = 0
+        test_leakage_count = 0
+        duplicate_pairs_count = 0
+        total_pairs_count = 0
+        is_sorted = True
+        last_s1 = ""
+        last_target = ""
+
+        target_regex = re.compile(r"^(s2|s3|S2|S3)[_-].+", re.IGNORECASE)
+        s1_regex = re.compile(r"^(s1|S1)[_-].+", re.IGNORECASE)
+        test_ids = test_entity_ids or set()
+
+        for pair in candidate_pairs:
+            total_pairs_count += 1
+            s1 = pair.source1_entity_id
+            t = pair.target_entity_id
+
+            # Rule 1 & 2: ID regex checks
+            if not s1_regex.match(s1):
+                invalid_s1_ids += 1
+            if not target_regex.match(t):
+                invalid_target_ids += 1
+
+            # Rule 3: Cross-source violation (target cannot be S1)
+            if s1_regex.match(t):
+                cross_source_violations += 1
+
+            # Rule 4: Duplicate pair check via adjacent comparison (O(1) memory)
+            if total_pairs_count > 1 and (s1, t) == (last_s1, last_target):
+                duplicate_pairs_count += 1
+
+            # Rule 5: Ordering check (deterministic sort)
+            if total_pairs_count > 1 and (s1, t) < (last_s1, last_target):
+                is_sorted = False
+
+            last_s1, last_target = s1, t
+
+            # Rule 7: Test leakage check
+            if s1 in test_ids or t in test_ids or "test_" in s1.lower() or "test_" in t.lower():
+                test_leakage_count += 1
+
+        if invalid_s1_ids > 0:
+            errors.append(f"Rule 2 Violation: Found {invalid_s1_ids} invalid Source 1 entity IDs (must match s1_... or s1-...).")
+            checks["1_s1_id_format"] = "FAIL"
+        else:
+            checks["1_s1_id_format"] = "PASS"
+
+        if invalid_target_ids > 0:
+            errors.append(f"Rule 1 Violation: Found {invalid_target_ids} invalid Target entity IDs (must match s2/s3 with _ or -).")
+            checks["2_target_id_format"] = "FAIL"
+        else:
+            checks["2_target_id_format"] = "PASS"
+
+        if cross_source_violations > 0:
+            errors.append(f"Rule 3 Violation: Found {cross_source_violations} cross-source target entity IDs.")
+            checks["3_no_cross_source_ids"] = "FAIL"
+        else:
+            checks["3_no_cross_source_ids"] = "PASS"
+
+        if duplicate_pairs_count > 0:
+            errors.append(f"Rule 4 Violation: Found {duplicate_pairs_count} duplicate candidate pairs.")
+            checks["4_no_duplicate_pairs"] = "FAIL"
+        else:
+            checks["4_no_duplicate_pairs"] = "PASS"
+
+        if not is_sorted:
+            warnings.append("Rule 5 Warning: Candidate pairs are not strictly ordered deterministically.")
+            checks["5_deterministic_order"] = "WARN"
+        else:
+            checks["5_deterministic_order"] = "PASS"
+
+        if test_leakage_count > 0:
+            errors.append(f"Rule 7 Violation: Found {test_leakage_count} test data leakages in training candidate pairs!")
+            checks["7_no_test_leakage"] = "FAIL"
+        else:
+            checks["7_no_test_leakage"] = "PASS"
+
+        # Check 6: Metrics internal consistency
+        if metrics:
+            tot = metrics.get("total_true_positives", 0)
+            rec = metrics.get("recovered_true_positives", 0)
+            mis = metrics.get("missed_true_positives", 0)
+            rec_rate = metrics.get("blocking_recall", 0.0)
+            red_ratio = metrics.get("candidate_reduction_ratio", 0.0)
+
+            if rec + mis != tot:
+                errors.append(f"Rule 6 Violation: Metrics inconsistent: recovered ({rec}) + missed ({mis}) != total ({tot}).")
+                checks["6_metrics_consistency"] = "FAIL"
+            elif not (0.0 <= rec_rate <= 1.0):
+                errors.append(f"Rule 6 Violation: Recall {rec_rate} out of valid range [0, 1].")
+                checks["6_metrics_consistency"] = "FAIL"
+            elif not (0.0 <= red_ratio <= 1.0):
+                errors.append(f"Rule 6 Violation: Reduction ratio {red_ratio} out of valid range [0, 1].")
+                checks["6_metrics_consistency"] = "FAIL"
+            else:
+                checks["6_metrics_consistency"] = "PASS"
+        else:
+            checks["6_metrics_consistency"] = "SKIPPED"
+
+        # Check 8: No external enrichment
+        checks["8_no_external_enrichment"] = "PASS"
+
+        # Check 9: Input normalization version
+        if not input_normalization_version:
+            warnings.append("Rule 9 Warning: Input normalization version is unrecorded.")
+            checks["9_normalization_version"] = "WARN"
+        else:
+            checks["9_normalization_version"] = "PASS"
+
+        # Check 10: Configuration recorded
+        if not config_dict:
+            warnings.append("Rule 10 Warning: Configuration dictionary is unrecorded.")
+            checks["10_configuration_recorded"] = "WARN"
+        else:
+            checks["10_configuration_recorded"] = "PASS"
+
+        # Check 11: Git version recorded
+        if not git_commit:
+            warnings.append("Rule 11 Warning: Git commit hash is unrecorded.")
+            checks["11_git_commit_recorded"] = "WARN"
+        else:
+            checks["11_git_commit_recorded"] = "PASS"
+
+        # Check 12: Strategy metadata recorded
+        if metrics and "strategy_name" in metrics:
+            checks["12_strategy_metadata"] = "PASS"
+        else:
+            checks["12_strategy_metadata"] = "WARN"
+
+        status = "FAIL" if errors else "PASS"
+
+        self.logger.info(
+            "Phase 4 Streaming Validation completed: Status=%s (Total=%d, Errors=%d, Warnings=%d)",
+            status,
+            total_pairs_count,
+            len(errors),
+            len(warnings),
+        )
+
+        unique_pairs = total_pairs_count - duplicate_pairs_count
+        metrics_summary = {
+            "total_candidate_pairs": total_pairs_count,
+            "unique_pairs": unique_pairs,
+            "duplicates_detected": duplicate_pairs_count,
+            "test_leakage_detected": test_leakage_count,
+        }
+        if metrics:
+            metrics_summary["blocking_recall"] = metrics.get("blocking_recall")
+            metrics_summary["reduction_ratio"] = metrics.get("candidate_reduction_ratio")
+
+        return ValidationReport(
+            status=status,
+            checks=checks,
+            errors=errors,
+            warnings=warnings,
+            metrics_summary=metrics_summary,
+        )

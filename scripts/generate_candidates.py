@@ -23,9 +23,12 @@ Usage examples:
 
 import argparse
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
+from typing import Any, Dict, List, Optional
 
 # Add project root to sys.path
 project_root = Path(__file__).resolve().parent.parent
@@ -33,9 +36,14 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from src.blocking.config import BLOCKING_VERSION, BlockingConfig
-from src.blocking.generator import CandidateGenerator
-from src.blocking.io import save_all_blocking_artifacts, save_candidate_pairs, save_json_artifact
+from src.blocking.generator import (
+    CandidateGenerator,
+    stream_merged_candidate_chunks,
+    write_candidates_chunk,
+)
+from src.blocking.io import save_all_blocking_artifacts_streaming
 from src.blocking.strategies import create_default_strategies, create_strategy
+from src.blocking.types import CandidatePair
 from src.blocking.validator import BlockingValidator
 from src.config import load_config
 from src.data.data_source import create_data_source
@@ -112,7 +120,13 @@ def parse_args(args=None):
         "--chunksize",
         type=int,
         default=50000,
-        help="Streaming chunksize for reading tables (default: 50000).",
+        help="Streaming chunksize for reading tables and spilling bounded candidate chunks (default: 50000).",
+    )
+    parser.add_argument(
+        "--temp-dir",
+        type=str,
+        default=None,
+        help="Optional local temporary directory for disk-backed chunks (defaults to system /tmp).",
     )
     parser.add_argument(
         "--aws-region",
@@ -126,7 +140,7 @@ def parse_args(args=None):
 def main():
     args = parse_args()
     logger = setup_logger(name="generate_candidates")
-    logger.info("Initializing Phase 4 Candidate Generation CLI...")
+    logger.info("Initializing Phase 4 Candidate Generation CLI (Disk-backed Streaming)...")
 
     project_cfg = load_config()
 
@@ -141,6 +155,7 @@ def main():
     logger.info("  Seed                  : %d", args.seed)
     logger.info("  Max Posting List Size : %d", args.max_posting_list_size)
     logger.info("  Country Agreement     : %s", args.country_agreement_mode)
+    logger.info("  Chunksize (S1 records): %d", args.chunksize)
 
     norm_source = create_data_source(norm_uri, region=args.aws_region)
     output_source = create_data_source(output_uri, region=args.aws_region)
@@ -170,8 +185,8 @@ def main():
         logger_instance=logger,
     )
 
-    # 2. Stream Source 1 and Generate Candidates
-    logger.info("Step 2/4: Generating candidates for Source 1 entities...")
+    # 2. Stream Source 1 and Generate Candidates into Bounded Disk Chunks
+    logger.info("Step 2/4: Generating candidates into bounded disk chunks...")
     generator = CandidateGenerator(strategy=strategy, index=index, config=blocking_config)
 
     s1_path = "train/train_source1_normalized.tsv"
@@ -180,74 +195,133 @@ def main():
         if norm_source.exists(alt):
             s1_path = alt
 
-    all_candidate_pairs = []
+    # Setup temporary directory for disk-backed chunks
+    base_temp = Path(args.temp_dir) if args.temp_dir else Path(tempfile.gettempdir())
+    base_temp.mkdir(parents=True, exist_ok=True)
+    temp_dir = Path(tempfile.mkdtemp(prefix="cand_gen_", dir=str(base_temp)))
+    logger.info("Temporary chunk directory: %s", temp_dir)
+
+    chunk_files: List[Path] = []
+    chunk_idx = 0
     s1_processed = 0
+    total_raw_pairs_generated = 0
 
-    for chunk in norm_source.read_chunks(s1_path, sep="\t", chunksize=args.chunksize):
-        recs = chunk.to_dict(orient="records")
-        for rec in recs:
-            s1_processed += 1
-            if args.sample_size and s1_processed > args.sample_size:
+    try:
+        current_chunk_pairs: List[CandidatePair] = []
+
+        for chunk in norm_source.read_chunks(s1_path, sep="\t", chunksize=args.chunksize):
+            recs = chunk.to_dict(orient="records")
+            for rec in recs:
+                s1_processed += 1
+                if args.sample_size and s1_processed > args.sample_size:
+                    break
+                cands = generator.generate_candidates_for_record(rec)
+                current_chunk_pairs.extend(cands)
+
+            # Spill chunk to disk when reaching bounded chunk size
+            if current_chunk_pairs:
+                chunk_file = temp_dir / f"chunk_{chunk_idx:05d}.tsv.gz"
+                n_written = write_candidates_chunk(current_chunk_pairs, chunk_file)
+                chunk_files.append(chunk_file)
+                chunk_idx += 1
+                total_raw_pairs_generated += n_written
+                logger.info(
+                    "Spilled chunk %d: %d candidate pairs to %s",
+                    chunk_idx,
+                    n_written,
+                    chunk_file.name,
+                )
+                current_chunk_pairs.clear()
+
+            if args.sample_size and s1_processed >= args.sample_size:
                 break
-            cands = generator.generate_candidates_for_record(rec)
-            all_candidate_pairs.extend(cands)
-        if args.sample_size and s1_processed >= args.sample_size:
-            break
 
-    elapsed = time.time() - start_time
-    logger.info(
-        "Candidate generation complete: %d Source 1 records -> %d candidate pairs in %.2fs",
-        s1_processed,
-        len(all_candidate_pairs),
-        elapsed,
-    )
+        # Flush any remaining candidate pairs
+        if current_chunk_pairs:
+            chunk_file = temp_dir / f"chunk_{chunk_idx:05d}.tsv.gz"
+            n_written = write_candidates_chunk(current_chunk_pairs, chunk_file)
+            chunk_files.append(chunk_file)
+            chunk_idx += 1
+            total_raw_pairs_generated += n_written
+            current_chunk_pairs.clear()
 
-    # Globally sort deterministically before validation and persistence
-    all_candidate_pairs.sort(key=lambda p: (p.source1_entity_id, p.target_entity_id))
+        generation_elapsed = time.time() - start_time
+        logger.info(
+            "Candidate generation complete: %d S1 records -> %d raw pairs across %d chunks in %.2fs",
+            s1_processed,
+            total_raw_pairs_generated,
+            len(chunk_files),
+            generation_elapsed,
+        )
 
-    # 3. Validate
-    logger.info("Step 3/4: Validating candidate pairs...")
-    validator = BlockingValidator(logger_instance=logger)
-    git_hash = get_git_commit_hash()
-    val_report = validator.validate(
-        candidate_pairs=all_candidate_pairs,
-        input_normalization_version="v001",
-        git_commit=git_hash,
-        config_dict=blocking_config.to_dict(),
-    )
+        # 3. Stream Merge and Validate (O(1) RAM)
+        logger.info(
+            "Step 3/4: Deterministically merging %d chunks and streaming validation...",
+            len(chunk_files),
+        )
+        local_final_tsv = temp_dir / "candidate_pairs.tsv"
+        merged_stream = stream_merged_candidate_chunks(chunk_files, output_tsv_path=local_final_tsv)
 
-    if val_report.status != "PASS":
-        logger.error("Phase 4 Validation FAILED with %d error(s):", len(val_report.errors))
-        for err in val_report.errors:
-            logger.error("  - %s", err)
-        sys.exit(1)
+        validator = BlockingValidator(logger_instance=logger)
+        git_hash = get_git_commit_hash()
+        val_report = validator.validate_stream(
+            candidate_pairs=merged_stream,
+            input_normalization_version="v001",
+            git_commit=git_hash,
+            config_dict=blocking_config.to_dict(),
+        )
 
-    # 4. Save Artifacts
-    logger.info("Step 4/4: Persisting candidate artifacts...")
-    stats = {
-        "strategy_name": strategy.name,
-        "evaluated_s1_count": s1_processed,
-        "total_candidate_pairs": len(all_candidate_pairs),
-        "runtime_seconds": round(elapsed, 4),
-        "index_stats": index.get_stats(),
-    }
+        elapsed = time.time() - start_time
+        total_final_candidates = val_report.metrics_summary["total_candidate_pairs"]
+        logger.info(
+            "Merged and validated candidate set: %d candidate pairs (Duplicates: %d, Unique: %d)",
+            total_final_candidates,
+            val_report.metrics_summary["duplicates_detected"],
+            val_report.metrics_summary["unique_pairs"],
+        )
 
-    saved_uris = save_all_blocking_artifacts(
-        output_source=output_source,
-        candidate_pairs=all_candidate_pairs,
-        blocking_stats=stats,
-        strategy_results={"primary": stats},
-        validation_report=val_report,
-        config=blocking_config,
-        git_commit=git_hash,
-        normalization_version="v001",
-    )
+        if val_report.status != "PASS":
+            logger.error("Phase 4 Validation FAILED with %d error(s):", len(val_report.errors))
+            for err in val_report.errors:
+                logger.error("  - %s", err)
+            sys.exit(1)
 
-    logger.info("=" * 60)
-    logger.info("Phase 4 Candidate Generation COMPLETE!")
-    for k, uri in saved_uris.items():
-        logger.info("  %s: %s", k, uri)
-    logger.info("=" * 60)
+        # 4. Save Artifacts (streaming upload)
+        logger.info("Step 4/4: Persisting candidate artifacts...")
+        stats = {
+            "strategy_name": strategy.name,
+            "evaluated_s1_count": s1_processed,
+            "total_candidate_pairs": total_final_candidates,
+            "runtime_seconds": round(elapsed, 4),
+            "index_stats": index.get_stats(),
+        }
+
+        saved_uris = save_all_blocking_artifacts_streaming(
+            output_source=output_source,
+            candidate_pairs_file=local_final_tsv,
+            total_candidate_pairs=total_final_candidates,
+            blocking_stats=stats,
+            strategy_results={"primary": stats},
+            validation_report=val_report,
+            config=blocking_config,
+            git_commit=git_hash,
+            normalization_version="v001",
+        )
+
+        logger.info("=" * 60)
+        logger.info("Phase 4 Candidate Generation COMPLETE!")
+        for k, uri in saved_uris.items():
+            logger.info("  %s: %s", k, uri)
+        logger.info("=" * 60)
+
+    finally:
+        # Clean up temporary disk chunks safely
+        try:
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                logger.info("Cleaned up temporary chunk directory: %s", temp_dir)
+        except Exception as e:
+            logger.warning("Could not clean up temporary directory %s: %s", temp_dir, e)
 
 
 if __name__ == "__main__":

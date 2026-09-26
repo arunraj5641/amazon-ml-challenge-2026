@@ -1,7 +1,9 @@
-"""Candidate generation engine orchestrating query lookup, deduplication, and country gating."""
-
+import gzip
+import heapq
 import logging
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
+from contextlib import ExitStack
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 import pandas as pd
 
@@ -12,6 +14,104 @@ from src.blocking.types import CandidatePair
 from src.data.data_source import DataSource
 
 logger = logging.getLogger(__name__)
+
+
+def write_candidates_chunk(
+    pairs: List[CandidatePair],
+    chunk_file: Union[str, Path],
+) -> int:
+    """Sorts candidate pairs and spills them to a disk chunk file (gzip supported).
+
+    Args:
+        pairs: List of CandidatePair objects to write.
+        chunk_file: Destination file path (if ends with .gz, compresses with gzip).
+
+    Returns:
+        Number of candidate pairs written.
+    """
+    path = Path(chunk_file).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Sort chunk deterministically by (source1_entity_id, target_entity_id)
+    pairs.sort(key=lambda p: (p.source1_entity_id, p.target_entity_id))
+
+    lines = [
+        f"{p.source1_entity_id}\t{p.target_entity_id}\t{p.target_source}\t{','.join(p.strategies)}\n"
+        for p in pairs
+    ]
+
+    if str(path).endswith(".gz"):
+        with gzip.open(path, "wt", encoding="utf-8", compresslevel=1) as f:
+            f.writelines(lines)
+    else:
+        with open(path, "wt", encoding="utf-8") as f:
+            f.writelines(lines)
+
+    return len(pairs)
+
+
+def stream_merged_candidate_chunks(
+    chunk_files: List[Union[str, Path]],
+    output_tsv_path: Optional[Union[str, Path]] = None,
+) -> Iterator[CandidatePair]:
+    """Deterministically merges sorted chunk files using streaming K-way merge (O(1) RAM).
+
+    Args:
+        chunk_files: List of sorted chunk file paths (plain .tsv or .tsv.gz).
+        output_tsv_path: Optional local destination path to write final candidate_pairs.tsv.
+
+    Yields:
+        CandidatePair instances in globally sorted order (source1_entity_id, target_entity_id).
+    """
+    valid_chunks = [Path(p).resolve() for p in chunk_files if Path(p).is_file()]
+    if not valid_chunks:
+        if output_tsv_path:
+            out_p = Path(output_tsv_path).resolve()
+            out_p.parent.mkdir(parents=True, exist_ok=True)
+            with open(out_p, "wt", encoding="utf-8") as out_f:
+                out_f.write("source1_entity_id\ttarget_entity_id\ttarget_source\tstrategies\n")
+        return
+
+    out_file_handle = None
+    if output_tsv_path:
+        out_p = Path(output_tsv_path).resolve()
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        out_file_handle = open(out_p, "wt", encoding="utf-8")
+        out_file_handle.write("source1_entity_id\ttarget_entity_id\ttarget_source\tstrategies\n")
+
+    try:
+        with ExitStack() as stack:
+            iterators = []
+            for cp in valid_chunks:
+                if str(cp).endswith(".gz"):
+                    fh = stack.enter_context(gzip.open(cp, "rt", encoding="utf-8"))
+                else:
+                    fh = stack.enter_context(open(cp, "rt", encoding="utf-8"))
+                iterators.append(fh)
+
+            # Deterministic K-way merge ordered by (s1_id, target_id)
+            merged = heapq.merge(*iterators, key=lambda line: line.split("\t", 2)[:2])
+
+            for line in merged:
+                if out_file_handle:
+                    out_file_handle.write(line)
+
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) >= 3:
+                    s1 = parts[0]
+                    t = parts[1]
+                    src = parts[2]
+                    strats = tuple(parts[3].split(",")) if len(parts) > 3 and parts[3] else ()
+                    yield CandidatePair(
+                        source1_entity_id=s1,
+                        target_entity_id=t,
+                        target_source=src,
+                        strategies=strats,
+                    )
+    finally:
+        if out_file_handle:
+            out_file_handle.close()
+
 
 
 class CandidateGenerator:
