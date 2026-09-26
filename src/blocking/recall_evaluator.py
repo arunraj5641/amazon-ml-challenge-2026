@@ -4,26 +4,26 @@ Streams ~500M candidate pairs against sorted Phase 3 ground-truth positives
 using a deterministic O(1)-RAM two-pointer comparison.
 """
 
-from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import gzip
 import io
-import json
 import logging
 from pathlib import Path
+import subprocess
 import time
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
-from src.data.data_source import DataSource, LocalDataSource, S3DataSource, create_data_source
+from src.data.data_source import S3DataSource, create_data_source
+
+
 def get_git_commit_hash() -> str:
     """Retrieves current git commit hash, falling back to 'unknown'."""
     try:
-        import subprocess
-
         out = subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL)
         return out.decode("utf-8").strip()
     except Exception:
         return "unknown"
+
 
 logger = logging.getLogger(__name__)
 
@@ -105,18 +105,26 @@ def load_authoritative_positives(
     is_training_pairs = "label" in header and "target_entity_id" in header
     is_raw_gt = "matched_entity_ids" in header and "source1_entity_id" in header
 
-    if not is_training_pairs and not is_raw_gt:
-        # Fallback heuristic: check first data line
-        # If columns >= 2 and column 0 starts with s1_
+    col_s1_idx: int = 0
+    col_target_idx: int = -1
+    col_matches_idx: int = -1
+    col_src_idx: int = -1
+    col_label_idx: int = -1
+
+    if is_training_pairs:
+        col_s1_idx = header.index("source1_entity_id")
+        col_target_idx = header.index("target_entity_id")
+        col_label_idx = header.index("label")
+        if "target_source" in header:
+            col_src_idx = header.index("target_source")
+    elif is_raw_gt:
+        col_s1_idx = header.index("source1_entity_id")
+        col_matches_idx = header.index("matched_entity_ids")
+    else:
         col_s1_idx = 0
         col_target_idx = 1
-        col_label_idx = header.index("label") if "label" in header else -1
-    else:
-        col_s1_idx = header.index("source1_entity_id")
-        col_target_idx = header.index("target_entity_id") if "target_entity_id" in header else -1
-        col_matches_idx = header.index("matched_entity_ids") if "matched_entity_ids" in header else -1
-        col_src_idx = header.index("target_source") if "target_source" in header else -1
-        col_label_idx = header.index("label") if "label" in header else -1
+        if "label" in header:
+            col_label_idx = header.index("label")
 
     for line in line_iter:
         parts = line.rstrip("\r\n").split("\t")
