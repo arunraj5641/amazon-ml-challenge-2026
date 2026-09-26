@@ -88,3 +88,53 @@ def test_normalize_cli_invalid_dataset_fails(tmp_path: Path):
     res = subprocess.run(cmd, capture_output=True, text=True)
     assert res.returncode != 0
     assert "Normalization failed with errors" in res.stdout or "Normalization failed with errors" in res.stderr
+
+
+EVALUATE_BLOCKING_SCRIPT = REPO_ROOT / "scripts" / "evaluate_blocking.py"
+GENERATE_CANDIDATES_SCRIPT = REPO_ROOT / "scripts" / "generate_candidates.py"
+
+
+def test_evaluate_blocking_cli_valid_sample(tmp_path: Path):
+    """Verify evaluate_blocking CLI runs cleanly and produces artifacts."""
+    out_dir = tmp_path / "block_eval_out"
+    cmd = [
+        sys.executable,
+        str(EVALUATE_BLOCKING_SCRIPT),
+        "--raw-input",
+        str(SAMPLE_DATA_DIR),
+        "--norm-input",
+        str(SAMPLE_DATA_DIR),
+        "--output",
+        str(out_dir),
+    ]
+
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0
+    assert "Phase 4 Blocking Strategy Evaluation COMPLETE!" in res.stdout
+    assert (out_dir / "candidate_pairs.tsv").is_file()
+    assert (out_dir / "blocking_stats.json").is_file()
+    assert (out_dir / "blocking_strategy_results.json").is_file()
+    assert (out_dir / "blocking_validation_report.json").is_file()
+    assert (out_dir / "blocking_metadata.json").is_file()
+
+
+def test_generate_candidates_cli_valid_sample(tmp_path: Path):
+    """Verify generate_candidates CLI runs cleanly and produces candidate_pairs.tsv."""
+    out_dir = tmp_path / "gen_cands_out"
+    cmd = [
+        sys.executable,
+        str(GENERATE_CANDIDATES_SCRIPT),
+        "--norm-input",
+        str(SAMPLE_DATA_DIR),
+        "--output",
+        str(out_dir),
+        "--strategy",
+        "composite",
+    ]
+
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0
+    assert "Phase 4 Candidate Generation COMPLETE!" in res.stdout
+    assert (out_dir / "candidate_pairs.tsv").is_file()
+    assert (out_dir / "blocking_stats.json").is_file()
+

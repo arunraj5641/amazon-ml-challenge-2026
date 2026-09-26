@@ -225,13 +225,76 @@ def run_smoke_test() -> bool:
             logger.error("  [FAIL] Phase 3 pair builder error: %s", e)
             failures.append(f"Phase 3 pair builder error: {e}")
 
+    # 8. Verify Phase 4 Candidate Blocking pipeline on sample data
+    if sample_dir.is_dir():
+        import tempfile
+        try:
+            from src.blocking.config import BlockingConfig
+            from src.blocking.evaluator import BlockingEvaluator
+            from src.blocking.io import save_all_blocking_artifacts
+            from src.blocking.validator import BlockingValidator
+            from src.data.data_source import LocalDataSource
+
+            with tempfile.TemporaryDirectory() as tmp_blocking:
+                in_ds = LocalDataSource(base_dir=sample_dir)
+                out_ds = LocalDataSource(base_dir=tmp_blocking)
+
+                b_cfg = BlockingConfig(
+                    strategies=["exact_name", "name_token", "composite"],
+                    max_posting_list_size=50,
+                    seed=42,
+                )
+                evaluator = BlockingEvaluator(
+                    norm_source=in_ds,
+                    raw_source=in_ds,
+                    config=b_cfg,
+                    logger_instance=logger,
+                )
+                benchmark_out = evaluator.run_benchmark(
+                    strategy_names=["exact_name", "name_token", "composite"],
+                    s1_rel_path="train/train_source1.tsv",
+                    s2_rel_path="train/train_source2.tsv",
+                    s3_rel_path="train/train_source3.tsv",
+                    gt_rel_path="train/train_ground_truth.tsv",
+                )
+                report_data = benchmark_out["report"]
+                candidates = benchmark_out["candidates"]
+
+                validator = BlockingValidator(logger_instance=logger)
+                val_report = validator.validate(
+                    candidates,
+                    metrics=report_data["strategy_details"]["composite"],
+                    config_dict=b_cfg.to_dict(),
+                    input_normalization_version="v001",
+                    git_commit="smoke-test",
+                )
+                assert val_report.status == "PASS"
+
+                saved = save_all_blocking_artifacts(
+                    output_source=out_ds,
+                    candidate_pairs=candidates,
+                    blocking_stats=report_data["strategy_details"]["composite"],
+                    strategy_results=report_data,
+                    validation_report=val_report,
+                    config=b_cfg,
+                )
+                assert out_ds.exists("candidate_pairs.tsv")
+                assert out_ds.exists("blocking_stats.json")
+                assert out_ds.exists("blocking_strategy_results.json")
+                assert out_ds.exists("blocking_validation_report.json")
+                assert out_ds.exists("blocking_metadata.json")
+                logger.info("  [PASS] Phase 4 sample candidate blocking pipeline executed and PASSED.")
+        except Exception as e:
+            logger.error("  [FAIL] Phase 4 candidate blocking error: %s", e)
+            failures.append(f"Phase 4 candidate blocking error: {e}")
+
     if failures:
         logger.error("Smoke test FAILED with %d error(s):", len(failures))
         for err in failures:
             logger.error("  - %s", err)
         return False
 
-    logger.info("Smoke test PASSED! Project infrastructure, Phase 1, Phase 2, and Phase 3 pipelines are operational.")
+    logger.info("Smoke test PASSED! Project infrastructure, Phase 1, Phase 2, Phase 3, and Phase 4 pipelines are operational.")
     return True
 
 

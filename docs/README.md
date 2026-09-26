@@ -33,9 +33,18 @@ S3 (Persistent checkpoints, features, and model artifacts)
   - Memory-conscious chunked streaming.
   - CLI runner generating `validation_report.json` and `dataset_stats.json`.
 - **Future Phases (2+)**:
-  - Phase 2: Text/Attribute normalization and cleaning.
-  - Phase 3: Training pair generation.
-  - Phase 4: Blocking & candidate filtering.
+- **Phase 3: Training Pair Builder**
+  - Profiling ground truth match distributions (singletons, multi-matches).
+  - Preserving 100% of authoritative positive pairs.
+  - Reproducible hard/moderate negative sampling.
+  - Pair validation and artifact persistence.
+- **Phase 4: Candidate Blocking & Filtering (Current)**
+  - Modular blocking strategies (`exact_name`, `name_token`, `name_prefix`, `address_conservative`, `country_scoped_name`, `composite`).
+  - Memory-conscious inverted index with high-frequency key suppression (`max_posting_list_size`).
+  - Country-aware blocking supporting open-set countries (including France).
+  - Ground truth candidate recall and reduction ratio evaluation.
+  - Full details in [docs/PHASE4_BLOCKING.md](PHASE4_BLOCKING.md).
+- **Future Phases (5+)**:
   - Phase 5: Final candidate generation pipeline.
   - Phase 6: Feature engineering.
   - Phase 7: ML matcher and classification models.
